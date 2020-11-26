@@ -11,6 +11,11 @@ extern ngx_module_t  ngx_http_redis2_module;
 
 typedef struct {
     ngx_http_upstream_conf_t   upstream;
+#if (NGX_HTTP_SSL)
+    ngx_uint_t                 ssl;
+    ngx_uint_t                 ssl_protocols;
+    ngx_str_t                  ssl_ciphers;
+#endif
     ngx_str_t                  literal_query; /* for redis2_literal_raw_query */
     ngx_http_complex_value_t  *complex_query; /* for redis2_raw_query */
     ngx_http_complex_value_t  *complex_query_count; /* for redis2_raw_query */

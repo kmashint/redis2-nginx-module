@@ -29,6 +29,21 @@ static ngx_conf_bitmask_t  ngx_http_redis2_next_upstream_masks[] = {
 };
 
 
+#if (NGX_HTTP_SSL)
+
+static ngx_conf_bitmask_t  ngx_http_redis2_ssl_protocols[] = {
+    { ngx_string("SSLv2"), NGX_SSL_SSLv2 },
+    { ngx_string("SSLv3"), NGX_SSL_SSLv3 },
+    { ngx_string("TLSv1"), NGX_SSL_TLSv1 },
+    { ngx_string("TLSv1.1"), NGX_SSL_TLSv1_1 },
+    { ngx_string("TLSv1.2"), NGX_SSL_TLSv1_2 },
+    { ngx_string("TLSv1.3"), NGX_SSL_TLSv1_3 },
+    { ngx_null_string, 0 }
+};
+
+#endif
+
+
 static ngx_command_t  ngx_http_redis2_commands[] = {
 
     { ngx_string("redis2_query"),
@@ -109,6 +124,52 @@ static ngx_command_t  ngx_http_redis2_commands[] = {
       offsetof(ngx_http_redis2_loc_conf_t, upstream.next_upstream),
       &ngx_http_redis2_next_upstream_masks },
 
+#if (NGX_HTTP_SSL)
+
+    { ngx_string("redis2_ssl"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_redis2_loc_conf_t, ssl),
+      NULL },
+
+    { ngx_string("redis2_ssl_protocols"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
+      ngx_conf_set_bitmask_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_redis2_loc_conf_t, ssl_protocols),
+      &ngx_http_redis2_ssl_protocols },
+
+    { ngx_string("redis2_ssl_ciphers"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_redis2_loc_conf_t, ssl_ciphers),
+      NULL },
+
+    { ngx_string("redis2_ssl_session_reuse"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_redis2_loc_conf_t, upstream.ssl_session_reuse),
+      NULL },
+
+    { ngx_string("redis2_ssl_name"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_http_set_complex_value_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_redis2_loc_conf_t, upstream.ssl_name),
+      NULL },
+
+    { ngx_string("redis2_ssl_server_name"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_redis2_loc_conf_t, upstream.ssl_server_name),
+      NULL },
+
+#endif
+
       ngx_null_command
 };
 
@@ -142,6 +203,54 @@ ngx_module_t  ngx_http_redis2_module = {
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING
 };
+
+
+#if (NGX_HTTP_SSL)
+
+static ngx_int_t
+ngx_http_redis2_set_ssl(ngx_conf_t *cf, ngx_http_redis2_loc_conf_t *rlcf)
+{
+    ngx_pool_cleanup_t  *cln;
+
+    rlcf->upstream.ssl = ngx_pcalloc(cf->pool, sizeof(ngx_ssl_t));
+    if (rlcf->upstream.ssl == NULL) {
+        return NGX_ERROR;
+    }
+
+    rlcf->upstream.ssl->log = cf->log;
+
+    if (ngx_ssl_create(rlcf->upstream.ssl, rlcf->ssl_protocols, NULL)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    cln = ngx_pool_cleanup_add(cf->pool, 0);
+    if (cln == NULL) {
+        ngx_ssl_cleanup_ctx(rlcf->upstream.ssl);
+        return NGX_ERROR;
+    }
+
+    cln->handler = ngx_ssl_cleanup_ctx;
+    cln->data = rlcf->upstream.ssl;
+
+    if (ngx_ssl_ciphers(cf, rlcf->upstream.ssl, &rlcf->ssl_ciphers, 0)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    if (ngx_ssl_client_session_cache(cf, rlcf->upstream.ssl,
+                                     rlcf->upstream.ssl_session_reuse)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+#endif
 
 
 static void *
@@ -187,6 +296,12 @@ ngx_http_redis2_create_loc_conf(ngx_conf_t *cf)
     conf->upstream.pass_request_headers = 0;
     conf->upstream.pass_request_body = 0;
 
+#if (NGX_HTTP_SSL)
+    conf->upstream.ssl_session_reuse = NGX_CONF_UNSET;
+    conf->upstream.ssl_server_name = NGX_CONF_UNSET;
+    conf->upstream.ssl_verify = NGX_CONF_UNSET;
+#endif
+
     return conf;
 }
 
@@ -216,6 +331,31 @@ ngx_http_redis2_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                                   |NGX_HTTP_UPSTREAM_FT_ERROR
                                   |NGX_HTTP_UPSTREAM_FT_TIMEOUT));
 
+#if (NGX_HTTP_SSL)
+
+    ngx_conf_merge_value(conf->upstream.ssl_session_reuse,
+                              prev->upstream.ssl_session_reuse, 1);
+
+    ngx_conf_merge_bitmask_value(conf->ssl_protocols, prev->ssl_protocols,
+                                 (NGX_CONF_BITMASK_SET|NGX_SSL_TLSv1
+                                  |NGX_SSL_TLSv1_1|NGX_SSL_TLSv1_2));
+
+    ngx_conf_merge_str_value(conf->ssl_ciphers, prev->ssl_ciphers,
+                             "DEFAULT");
+
+    if (conf->upstream.ssl_name == NULL) {
+        conf->upstream.ssl_name = prev->upstream.ssl_name;
+    }
+
+    ngx_conf_merge_value(conf->upstream.ssl_server_name,
+                              prev->upstream.ssl_server_name, 0);
+
+    if (conf->ssl && ngx_http_redis2_set_ssl(cf, conf) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+#endif
+
     if (conf->upstream.next_upstream & NGX_HTTP_UPSTREAM_FT_OFF) {
         conf->upstream.next_upstream = NGX_CONF_BITMASK_SET
                                        |NGX_HTTP_UPSTREAM_FT_OFF;
@@ -223,6 +363,9 @@ ngx_http_redis2_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     if (conf->upstream.upstream == NULL) {
         conf->upstream.upstream = prev->upstream.upstream;
+#if (NGX_HTTP_SSL)
+        conf->upstream.ssl = prev->upstream.ssl;
+#endif
     }
 
     if (conf->complex_query == NULL) {
