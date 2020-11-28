@@ -245,7 +245,16 @@ ngx_http_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 // elsewhere in ngx_http_proxy_module.c is sets ssl=1 if https:
 // but this is a constant property for ngx_http_redis2_loc_conf_t so no need for the logic
 
-  r->upstream->ssl = 1;
+#if (NGX_HTTP_SSL)
+
+    } else if (proxy.len > 8
+               && ngx_strncasecmp(proxy.data, (u_char *) "https://", 8) == 0)
+    {
+        add = 8;
+        port = 443;
+        r->upstream->ssl = 1;
+
+#endif
 
 
 // there is a ngx_http_proxy_set_ssl that needs to be translated to redis2 terms

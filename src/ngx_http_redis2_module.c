@@ -126,13 +126,6 @@ static ngx_command_t  ngx_http_redis2_commands[] = {
 
 #if (NGX_HTTP_SSL)
 
-    { ngx_string("redis2_ssl"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
-      ngx_conf_set_flag_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_redis2_loc_conf_t, ssl),
-      NULL },
-
     { ngx_string("redis2_ssl_protocols"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
       ngx_conf_set_bitmask_slot,
@@ -166,6 +159,13 @@ static ngx_command_t  ngx_http_redis2_commands[] = {
       ngx_conf_set_flag_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_redis2_loc_conf_t, upstream.ssl_server_name),
+      NULL },
+
+    { ngx_string("redis2_ssl_verify"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_redis2_loc_conf_t, upstream.ssl_verify),
       NULL },
 
 #endif
@@ -350,6 +350,9 @@ ngx_http_redis2_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_value(conf->upstream.ssl_server_name,
                               prev->upstream.ssl_server_name, 0);
 
+    ngx_conf_merge_value(conf->upstream.ssl_verify,
+                            prev->upstream.ssl_verify, 0);
+
     if (conf->ssl && ngx_http_redis2_set_ssl(cf, conf) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -394,10 +397,11 @@ ngx_http_redis2_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_redis2_loc_conf_t *rlcf = conf;
 
-    ngx_str_t                  *value;
+    size_t                      add;
+    ngx_str_t                  *value, *url;
     ngx_http_core_loc_conf_t   *clcf;
     ngx_uint_t                  n;
-    ngx_url_t                   url;
+    ngx_url_t                   u;
 
     ngx_http_compile_complex_value_t         ccv;
 
@@ -415,7 +419,9 @@ ngx_http_redis2_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
-    n = ngx_http_script_variables_count(&value[1]);
+    url = &value[1];
+
+    n = ngx_http_script_variables_count(url);
     if (n) {
         rlcf->complex_target = ngx_palloc(cf->pool,
                                           sizeof(ngx_http_complex_value_t));
@@ -438,12 +444,31 @@ ngx_http_redis2_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     rlcf->complex_target = NULL;
 
-    ngx_memzero(&url, sizeof(ngx_url_t));
+    if (ngx_strncasecmp(url->data, (u_char *) "ssl://", 6) == 0) {
 
-    url.url = value[1];
-    url.no_resolve = 1;
+#if (NGX_HTTP_SSL)
+        rlcf->ssl = 1;
+        add = 6;
+#else
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "ssl protocol requires SSL support");
+        return NGX_CONF_ERROR;
+#endif
 
-    rlcf->upstream.upstream = ngx_http_upstream_add(cf, &url, 0);
+    } else if (ngx_strnstr(url->data, "://", 10) != NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "invalid URL prefix");
+        return NGX_CONF_ERROR;
+    } else {
+        add = 0;
+    }
+
+    ngx_memzero(&u, sizeof(ngx_url_t));
+
+    u.url.len = url->len - add;
+    u.url.data = url->data + add;
+    u.no_resolve = 1;
+
+    rlcf->upstream.upstream = ngx_http_upstream_add(cf, &u, 0);
     if (rlcf->upstream.upstream == NULL) {
         return NGX_CONF_ERROR;
     }
